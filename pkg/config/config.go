@@ -162,6 +162,7 @@ type ChannelsConfig struct {
 	Slack    SlackConfig    `json:"slack"`
 	LINE     LINEConfig     `json:"line"`
 	OneBot   OneBotConfig   `json:"onebot"`
+	Bitrix24 Bitrix24Config `json:"bitrix24"`
 }
 
 type WhatsAppConfig struct {
@@ -237,6 +238,19 @@ type OneBotConfig struct {
 	ReconnectInterval  int                 `json:"reconnect_interval" env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
 	GroupTriggerPrefix []string            `json:"group_trigger_prefix" env:"PICOCLAW_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
 	AllowFrom          FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_ONEBOT_ALLOW_FROM"`
+}
+
+type Bitrix24Config struct {
+	Enabled       bool                `json:"enabled" env:"PICOCLAW_CHANNELS_BITRIX24_ENABLED"`
+	Domain        string              `json:"domain" env:"PICOCLAW_CHANNELS_BITRIX24_DOMAIN"`
+	WebhookSecret string              `json:"webhook_secret" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_SECRET"`
+	BotID         string              `json:"bot_id" env:"PICOCLAW_CHANNELS_BITRIX24_BOT_ID"`
+	UserID        string              `json:"user_id" env:"PICOCLAW_CHANNELS_BITRIX24_USER_ID"`
+	ClientID      string              `json:"client_id" env:"PICOCLAW_CHANNELS_BITRIX24_CLIENT_ID"`
+	WebhookHost   string              `json:"webhook_host" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_HOST"`
+	WebhookPort   int                 `json:"webhook_port" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_PORT"`
+	WebhookPath   string              `json:"webhook_path" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_PATH"`
+	AllowFrom     FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_BITRIX24_ALLOW_FROM"`
 }
 
 type HeartbeatConfig struct {
@@ -398,6 +412,18 @@ func DefaultConfig() *Config {
 				ReconnectInterval:  5,
 				GroupTriggerPrefix: []string{},
 				AllowFrom:          FlexibleStringSlice{},
+			},
+			Bitrix24: Bitrix24Config{
+				Enabled:       false,
+				Domain:        "",
+				WebhookSecret: "",
+				BotID:         "",
+				UserID:        "",
+				ClientID:      "",
+				WebhookHost:   "0.0.0.0",
+				WebhookPort:   18792,
+				WebhookPath:   "/webhook/bitrix24",
+				AllowFrom:     FlexibleStringSlice{},
 			},
 		},
 		Providers: ProvidersConfig{
