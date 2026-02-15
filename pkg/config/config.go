@@ -53,7 +53,12 @@ type Config struct {
 	Tools     ToolsConfig     `json:"tools"`
 	Heartbeat HeartbeatConfig `json:"heartbeat"`
 	Devices   DevicesConfig   `json:"devices"`
+	Voice     VoiceConfig     `json:"voice"`
 	mu        sync.RWMutex
+}
+
+type VoiceConfig struct {
+	QwenASR QwenASRConfig `json:"qwen_asr"`
 }
 
 type AgentsConfig struct {
@@ -483,6 +488,12 @@ func DefaultConfig() *Config {
 		Devices: DevicesConfig{
 			Enabled:    false,
 			MonitorUSB: true,
+		},
+		Voice: VoiceConfig{
+			QwenASR: QwenASRConfig{
+				Enabled: false,
+				APIBase: "",
+			},
 		},
 	}
 }

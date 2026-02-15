@@ -636,6 +636,22 @@ func gatewayCmd() {
 		}
 	}
 
+	// Qwen3-ASR: if enabled, override Bitrix24 transcriber with local ASR
+	if cfg.Voice.QwenASR.Enabled && cfg.Voice.QwenASR.APIBase != "" {
+		qwenTranscriber := voice.NewQwenTranscriber(cfg.Voice.QwenASR.APIBase)
+		if qwenTranscriber.IsAvailable() {
+			if bitrix24Channel, ok := channelManager.GetChannel("bitrix24"); ok {
+				if bc, ok := bitrix24Channel.(*channels.Bitrix24Channel); ok {
+					bc.SetTranscriber(qwenTranscriber)
+					logger.InfoC("voice", "Qwen3-ASR transcription attached to Bitrix24 channel (overrides Groq)")
+				}
+			}
+			logger.InfoC("voice", "Qwen3-ASR voice transcription enabled")
+		} else {
+			logger.WarnC("voice", "Qwen3-ASR configured but server unreachable, falling back to Groq")
+		}
+	}
+
 	enabledChannels := channelManager.GetEnabledChannels()
 	if len(enabledChannels) > 0 {
 		fmt.Printf("✓ Channels enabled: %s\n", enabledChannels)

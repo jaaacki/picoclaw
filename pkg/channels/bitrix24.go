@@ -24,6 +24,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
 
+// Transcriber is an interface for speech-to-text providers.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audioFilePath string) (*voice.TranscriptionResponse, error)
+	IsAvailable() bool
+}
+
 // Bitrix24Channel implements the Channel interface for Bitrix24 CRM
 // using HTTP webhook for receiving messages and REST API for sending.
 type Bitrix24Channel struct {
@@ -33,7 +39,7 @@ type Bitrix24Channel struct {
 	httpClient  *http.Client
 	rateLimiter *time.Ticker
 	rateMu      sync.Mutex
-	transcriber *voice.GroqTranscriber
+	transcriber Transcriber
 	ctx         context.Context
 	cancel      context.CancelFunc
 }
@@ -61,7 +67,8 @@ func NewBitrix24Channel(cfg config.Bitrix24Config, messageBus *bus.MessageBus) (
 }
 
 // SetTranscriber sets the voice transcriber for audio message support.
-func (c *Bitrix24Channel) SetTranscriber(t *voice.GroqTranscriber) {
+// Accepts any Transcriber implementation (Groq, Qwen, etc.).
+func (c *Bitrix24Channel) SetTranscriber(t Transcriber) {
 	c.transcriber = t
 }
 
