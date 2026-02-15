@@ -146,41 +146,55 @@ func (t *Transcriber) Transcribe(ctx context.Context, audioFilePath string) (*Tr
 }
 
 // IsAvailable checks if the transcription service is reachable.
+// Tries multiple health check endpoints: /models (OpenAI standard), /health (common), base URL.
 func (t *Transcriber) IsAvailable() bool {
 	if t.apiBase == "" {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Try GET /models as a health check (works for most OpenAI-compatible APIs)
-	req, err := http.NewRequestWithContext(ctx, "GET", t.apiBase+"/models", nil)
-	if err != nil {
-		return false
+	// Try multiple endpoints — different services expose different health checks
+	endpoints := []string{
+		t.apiBase + "/models",  // OpenAI-compatible (Groq, vLLM)
+		t.apiBase + "/health",  // Common health endpoint
 	}
 
-	if t.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+t.apiKey)
+	// Also try the base URL without /v1 suffix for /health
+	if len(t.apiBase) > 3 && t.apiBase[len(t.apiBase)-3:] == "/v1" {
+		endpoints = append(endpoints, t.apiBase[:len(t.apiBase)-3]+"/health")
 	}
 
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		logger.DebugCF("voice", "Transcriber health check failed", map[string]interface{}{
-			"api_base": t.apiBase,
-			"error":    err.Error(),
-		})
-		return false
-	}
-	defer resp.Body.Close()
+	for _, endpoint := range endpoints {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
 
-	available := resp.StatusCode == http.StatusOK
-	logger.DebugCF("voice", "Transcriber health check", map[string]interface{}{
-		"api_base":  t.apiBase,
-		"available": available,
-		"status":    resp.StatusCode,
+		if t.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+t.apiKey)
+		}
+
+		resp, err := t.httpClient.Do(req)
+		cancel()
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			logger.DebugCF("voice", "Transcriber health check passed", map[string]interface{}{
+				"api_base": t.apiBase,
+				"endpoint": endpoint,
+			})
+			return true
+		}
+	}
+
+	logger.DebugCF("voice", "Transcriber health check failed (all endpoints)", map[string]interface{}{
+		"api_base": t.apiBase,
 	})
-	return available
+	return false
 }
 
 // GroqTranscriber is kept for backward compatibility with upstream.
