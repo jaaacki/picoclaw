@@ -251,6 +251,16 @@ type Bitrix24Config struct {
 	WebhookPort   int                 `json:"webhook_port" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_PORT"`
 	WebhookPath   string              `json:"webhook_path" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_PATH"`
 	AllowFrom     FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_BITRIX24_ALLOW_FROM"`
+	Commands      []Bitrix24Command   `json:"commands,omitempty"`
+}
+
+// Bitrix24Command defines a bot command for registration with Bitrix24.
+type Bitrix24Command struct {
+	Command     string `json:"command"`               // Lowercase letters/numbers, 1-32 chars
+	Title       string `json:"title"`                 // Display title (English)
+	Description string `json:"description,omitempty"` // Parameter hint (e.g., "[query]")
+	Common      bool   `json:"common,omitempty"`      // Global command (works in all chats)
+	Hidden      bool   `json:"hidden,omitempty"`      // Hidden from command list
 }
 
 type HeartbeatConfig struct {

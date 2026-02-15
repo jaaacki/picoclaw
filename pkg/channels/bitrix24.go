@@ -94,6 +94,12 @@ func (c *Bitrix24Channel) Start(ctx context.Context) error {
 	}()
 
 	c.setRunning(true)
+
+	// Register bot commands if configured (fire-and-forget)
+	if len(c.config.Commands) > 0 {
+		go c.registerCommands()
+	}
+
 	logger.InfoC("bitrix24", "Bitrix24 channel started (Webhook Mode)")
 	return nil
 }
@@ -372,6 +378,80 @@ func (c *Bitrix24Channel) handleCommand(event bitrix24Event) {
 	go c.sendTyping(dialogID)
 
 	c.HandleMessage(fromUserID, dialogID, content, nil, metadata)
+}
+
+// ============================================================================
+// Bot Command Registration (Issue #8)
+// ============================================================================
+
+// registerCommands registers bot commands on startup via imbot.command.register.
+// Errors don't block the channel — commands are a nice-to-have.
+func (c *Bitrix24Channel) registerCommands() {
+	for _, cmd := range c.config.Commands {
+		// Build webhook URL for command events
+		webhookURL := fmt.Sprintf("https://%s:%d%s?secret=%s",
+			c.config.WebhookHost,
+			c.config.WebhookPort,
+			c.config.WebhookPath,
+			c.config.WebhookSecret,
+		)
+		if c.config.WebhookHost == "0.0.0.0" {
+			// Use domain as fallback for public URL
+			webhookURL = fmt.Sprintf("https://%s%s?secret=%s",
+				c.config.Domain,
+				c.config.WebhookPath,
+				c.config.WebhookSecret,
+			)
+		}
+
+		common := "N"
+		if cmd.Common {
+			common = "Y"
+		}
+		hidden := "N"
+		if cmd.Hidden {
+			hidden = "Y"
+		}
+
+		params := map[string]string{
+			"COMMAND":           cmd.Command,
+			"COMMON":            common,
+			"HIDDEN":            hidden,
+			"EXTRANET_SUPPORT":  "N",
+			"EVENT_COMMAND_ADD": webhookURL,
+			"LANG[0][LANGUAGE_ID]": "en",
+			"LANG[0][TITLE]":       cmd.Title,
+			"LANG[1][LANGUAGE_ID]": "de",
+			"LANG[1][TITLE]":       cmd.Title, // German fallback to English
+		}
+		if cmd.Description != "" {
+			params["LANG[0][PARAMS]"] = cmd.Description
+			params["LANG[1][PARAMS]"] = cmd.Description
+		}
+		if c.config.BotID != "" {
+			params["BOT_ID"] = c.config.BotID
+		}
+
+		_, err := c.callAPI(c.ctx, "imbot.command.register", params)
+		if err != nil {
+			// Handle 409/already exists gracefully
+			if strings.Contains(err.Error(), "COMMAND_ALREADY_EXISTS") ||
+				strings.Contains(err.Error(), "409") {
+				logger.DebugCF("bitrix24", "Command already registered", map[string]interface{}{
+					"command": cmd.Command,
+				})
+			} else {
+				logger.ErrorCF("bitrix24", "Failed to register command", map[string]interface{}{
+					"command": cmd.Command,
+					"error":   err.Error(),
+				})
+			}
+		} else {
+			logger.InfoCF("bitrix24", "Registered command", map[string]interface{}{
+				"command": cmd.Command,
+			})
+		}
+	}
 }
 
 // ============================================================================
