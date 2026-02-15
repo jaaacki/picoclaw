@@ -477,6 +477,43 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// File Categorization Tests (Issue #10)
+// ============================================================================
+
+func TestCategorizeFile(t *testing.T) {
+	tests := []struct {
+		mimeType string
+		filename string
+		want     string
+	}{
+		{"image/jpeg", "photo.jpg", "image"},
+		{"image/png", "screenshot.png", "image"},
+		{"audio/mpeg", "voice.mp3", "voice"},
+		{"audio/ogg", "memo.ogg", "voice"},
+		{"video/mp4", "clip.mp4", "video"},
+		{"application/pdf", "doc.pdf", "document"},
+		{"application/msword", "file.doc", "document"},
+		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "file.docx", "document"},
+		{"application/octet-stream", "data.bin", "file"},
+		// Extension fallback
+		{"", "photo.jpg", "image"},
+		{"", "voice.ogg", "voice"},
+		{"", "clip.mp4", "video"},
+		{"", "report.pdf", "document"},
+		{"", "unknown.xyz", "file"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.filename, func(t *testing.T) {
+			got := categorizeFile(tt.mimeType, tt.filename)
+			if got != tt.want {
+				t.Errorf("categorizeFile(%q, %q) = %q, want %q", tt.mimeType, tt.filename, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractBracketField(t *testing.T) {
 	tests := []struct {
 		key    string

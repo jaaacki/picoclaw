@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -304,10 +307,6 @@ func (c *Bitrix24Channel) handleMessage(event bitrix24Event) {
 	}
 
 	messageText := event.Params["MESSAGE"]
-	if strings.TrimSpace(messageText) == "" {
-		logger.DebugC("bitrix24", "Empty message, skipping")
-		return
-	}
 
 	dialogID := firstNonEmpty(
 		event.Params["DIALOG_ID"],
@@ -315,8 +314,64 @@ func (c *Bitrix24Channel) handleMessage(event bitrix24Event) {
 		fromUserID,
 	)
 
+	// Send typing indicator immediately (fire-and-forget)
+	go c.sendTyping(dialogID)
+
 	userName := firstNonEmpty(event.User["NAME"], "User"+fromUserID)
 	senderID := fromUserID
+
+	// Handle file attachments (Issue #10)
+	var mediaPaths []string
+	var localFiles []string
+
+	defer func() {
+		for _, f := range localFiles {
+			if err := os.Remove(f); err != nil {
+				logger.DebugCF("bitrix24", "Failed to cleanup temp file", map[string]interface{}{
+					"file":  f,
+					"error": err.Error(),
+				})
+			}
+		}
+	}()
+
+	// Check for file attachment via FILES count or file ID in PARAMS
+	fileIDStr := event.Params["PARAMS"]
+	filesCount := event.Params["FILES"]
+
+	if fileIDStr != "" && (filesCount != "" || strings.TrimSpace(messageText) == "") {
+		localPath, category := c.downloadAttachment(fileIDStr)
+		if localPath != "" {
+			localFiles = append(localFiles, localPath)
+			mediaPaths = append(mediaPaths, localPath)
+
+			// Voice transcription (Issue #12)
+			if category == "voice" && c.transcriber != nil && c.transcriber.IsAvailable() {
+				ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+				defer cancel()
+				result, err := c.transcriber.Transcribe(ctx, localPath)
+				if err != nil {
+					logger.ErrorCF("bitrix24", "Voice transcription failed", map[string]interface{}{
+						"error": err.Error(),
+					})
+					messageText += " [voice message - transcription failed]"
+				} else {
+					messageText += " " + result.Text
+					logger.InfoCF("bitrix24", "Voice transcribed", map[string]interface{}{
+						"duration": result.Duration,
+						"language": result.Language,
+					})
+				}
+			} else if category != "" {
+				messageText += fmt.Sprintf(" [%s attachment]", category)
+			}
+		}
+	}
+
+	if strings.TrimSpace(messageText) == "" && len(mediaPaths) == 0 {
+		logger.DebugC("bitrix24", "Empty message, skipping")
+		return
+	}
 
 	metadata := map[string]string{
 		"platform":   "bitrix24",
@@ -326,15 +381,107 @@ func (c *Bitrix24Channel) handleMessage(event bitrix24Event) {
 	}
 
 	logger.DebugCF("bitrix24", "Received message", map[string]interface{}{
-		"sender_id": senderID,
-		"dialog_id": dialogID,
-		"preview":   utils.Truncate(messageText, 50),
+		"sender_id":    senderID,
+		"dialog_id":    dialogID,
+		"has_media":    len(mediaPaths) > 0,
+		"preview":      utils.Truncate(messageText, 50),
 	})
 
-	// Send typing indicator (fire-and-forget)
-	go c.sendTyping(dialogID)
+	c.HandleMessage(senderID, dialogID, messageText, mediaPaths, metadata)
+}
 
-	c.HandleMessage(senderID, dialogID, messageText, nil, metadata)
+// downloadAttachment fetches file info and downloads the attachment.
+// Returns the local file path and category (image/voice/video/document/file).
+func (c *Bitrix24Channel) downloadAttachment(fileID string) (string, string) {
+	// Fetch file info via disk.file.get
+	result, err := c.callAPI(c.ctx, "disk.file.get", map[string]string{
+		"id": fileID,
+	})
+	if err != nil {
+		logger.ErrorCF("bitrix24", "Failed to fetch file info", map[string]interface{}{
+			"file_id": fileID,
+			"error":   err.Error(),
+		})
+		return "", ""
+	}
+
+	var fileInfo struct {
+		ID          int    `json:"ID"`
+		Name        string `json:"NAME"`
+		Size        int    `json:"SIZE"`
+		ContentType string `json:"TYPE"`
+		DownloadURL string `json:"DOWNLOAD_URL"`
+	}
+	if err := json.Unmarshal(result, &fileInfo); err != nil {
+		logger.ErrorCF("bitrix24", "Failed to parse file info", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return "", ""
+	}
+
+	if fileInfo.DownloadURL == "" {
+		logger.WarnCF("bitrix24", "File has no download URL", map[string]interface{}{
+			"file_id": fileID,
+			"name":    fileInfo.Name,
+		})
+		return "", ""
+	}
+
+	// Categorize by MIME type
+	category := categorizeFile(fileInfo.ContentType, fileInfo.Name)
+
+	// Download the file
+	localPath := utils.DownloadFile(fileInfo.DownloadURL, fileInfo.Name, utils.DownloadOptions{
+		LoggerPrefix: "bitrix24",
+	})
+
+	if localPath == "" {
+		return "", ""
+	}
+
+	logger.InfoCF("bitrix24", "Downloaded attachment", map[string]interface{}{
+		"name":     fileInfo.Name,
+		"category": category,
+		"size":     fileInfo.Size,
+	})
+
+	return localPath, category
+}
+
+// categorizeFile determines the attachment category from MIME type and filename.
+func categorizeFile(mimeType, filename string) string {
+	lower := strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(lower, "image/"):
+		return "image"
+	case strings.HasPrefix(lower, "audio/"), strings.HasPrefix(lower, "voice"):
+		return "voice"
+	case strings.HasPrefix(lower, "video/"):
+		return "video"
+	case strings.HasPrefix(lower, "application/pdf"),
+		strings.HasPrefix(lower, "application/msword"),
+		strings.HasPrefix(lower, "application/vnd."):
+		return "document"
+	}
+
+	// Fallback: check extension
+	lowerName := strings.ToLower(filename)
+	switch {
+	case strings.HasSuffix(lowerName, ".jpg"), strings.HasSuffix(lowerName, ".jpeg"),
+		strings.HasSuffix(lowerName, ".png"), strings.HasSuffix(lowerName, ".gif"):
+		return "image"
+	case strings.HasSuffix(lowerName, ".mp3"), strings.HasSuffix(lowerName, ".ogg"),
+		strings.HasSuffix(lowerName, ".m4a"), strings.HasSuffix(lowerName, ".wav"),
+		strings.HasSuffix(lowerName, ".opus"):
+		return "voice"
+	case strings.HasSuffix(lowerName, ".mp4"), strings.HasSuffix(lowerName, ".webm"):
+		return "video"
+	case strings.HasSuffix(lowerName, ".pdf"), strings.HasSuffix(lowerName, ".doc"),
+		strings.HasSuffix(lowerName, ".docx"):
+		return "document"
+	}
+
+	return "file"
 }
 
 // handleCommand processes a bot command event (ONIMCOMMANDADD).
@@ -631,6 +778,128 @@ func (c *Bitrix24Channel) sendTyping(dialogID string) {
 			"error": err.Error(),
 		})
 	}
+}
+
+// ============================================================================
+// File Upload (Issue #11)
+// ============================================================================
+
+// diskFolderID caches the chat file folder ID to avoid repeated API calls.
+var diskFolderCache sync.Map // chatID → folderID string
+
+// uploadFile uploads a file to Bitrix24 using the 3-step flow:
+// 1. im.disk.folder.get (get/cache folder ID)
+// 2. disk.folder.uploadfile (upload to folder)
+// 3. Return [DISK=id] reference for embedding in messages
+func (c *Bitrix24Channel) uploadFile(ctx context.Context, chatID, filePath string) (string, error) {
+	// Step 1: Get chat folder ID (cached)
+	folderID, err := c.getChatFolderID(ctx, chatID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get folder ID: %w", err)
+	}
+
+	// Step 2: Upload file to folder
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	fileName := filepath.Base(filePath)
+	encoded := base64.StdEncoding.EncodeToString(fileData)
+
+	params := map[string]string{
+		"id":          folderID,
+		"data[NAME]":  fileName,
+		"fileContent[]": fileName,
+	}
+	// The second fileContent[] value is the base64 data
+	// We need to use form encoding with repeated keys
+	form := url.Values{}
+	for k, v := range params {
+		form.Set(k, v)
+	}
+	form.Add("fileContent[]", encoded)
+	if c.config.ClientID != "" {
+		form.Set("CLIENT_ID", c.config.ClientID)
+	}
+
+	c.rateMu.Lock()
+	<-c.rateLimiter.C
+	c.rateMu.Unlock()
+
+	apiURL := c.buildAPIURL("disk.folder.uploadfile")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("failed to create upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read upload response: %w", err)
+	}
+
+	var uploadResp struct {
+		Result struct {
+			ID int `json:"ID"`
+		} `json:"result"`
+		Error string `json:"error"`
+		Desc  string `json:"error_description"`
+	}
+	if err := json.Unmarshal(respBody, &uploadResp); err != nil {
+		return "", fmt.Errorf("failed to parse upload response: %w", err)
+	}
+	if uploadResp.Error != "" {
+		return "", fmt.Errorf("upload error: %s — %s", uploadResp.Error, uploadResp.Desc)
+	}
+	if uploadResp.Result.ID == 0 {
+		return "", fmt.Errorf("upload returned no file ID")
+	}
+
+	// Step 3: Return [DISK=id] reference
+	diskRef := fmt.Sprintf("[DISK=%d]", uploadResp.Result.ID)
+
+	logger.InfoCF("bitrix24", "File uploaded", map[string]interface{}{
+		"file":    fileName,
+		"disk_id": uploadResp.Result.ID,
+	})
+
+	return diskRef, nil
+}
+
+// getChatFolderID returns the disk folder ID for a chat, caching the result.
+func (c *Bitrix24Channel) getChatFolderID(ctx context.Context, chatID string) (string, error) {
+	// Check cache
+	if cached, ok := diskFolderCache.Load(chatID); ok {
+		return cached.(string), nil
+	}
+
+	result, err := c.callAPI(ctx, "im.disk.folder.get", map[string]string{
+		"CHAT_ID": chatID,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var folder struct {
+		ID int `json:"ID"`
+	}
+	if err := json.Unmarshal(result, &folder); err != nil {
+		return "", fmt.Errorf("failed to parse folder response: %w", err)
+	}
+	if folder.ID == 0 {
+		return "", fmt.Errorf("no folder ID for chat %s", chatID)
+	}
+
+	folderIDStr := fmt.Sprintf("%d", folder.ID)
+	diskFolderCache.Store(chatID, folderIDStr)
+	return folderIDStr, nil
 }
 
 // ============================================================================
