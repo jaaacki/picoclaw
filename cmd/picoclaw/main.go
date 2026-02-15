@@ -598,29 +598,41 @@ func gatewayCmd() {
 	// Inject channel manager into agent loop for command handling
 	agentLoop.SetChannelManager(channelManager)
 
-	var transcriber *voice.GroqTranscriber
-	if cfg.Providers.Groq.APIKey != "" {
+	// Voice transcription: single generic transcriber for all channels.
+	// Falls back to Groq provider key if no dedicated transcriber is configured.
+	var transcriber *voice.Transcriber
+	if cfg.Voice.Transcriber.Enabled && cfg.Voice.Transcriber.APIBase != "" {
+		transcriber = voice.NewTranscriber(cfg.Voice.Transcriber.APIBase, cfg.Voice.Transcriber.APIKey, cfg.Voice.Transcriber.Model)
+		if transcriber.IsAvailable() {
+			logger.InfoCF("voice", "Transcriber enabled", map[string]interface{}{
+				"api_base": cfg.Voice.Transcriber.APIBase,
+				"has_key":  cfg.Voice.Transcriber.APIKey != "",
+				"model":    cfg.Voice.Transcriber.Model,
+			})
+		} else {
+			logger.WarnC("voice", "Transcriber configured but server unreachable")
+			transcriber = nil
+		}
+	} else if cfg.Providers.Groq.APIKey != "" {
+		// Backward compatible: use Groq provider as transcriber if no dedicated config
 		transcriber = voice.NewGroqTranscriber(cfg.Providers.Groq.APIKey)
-		logger.InfoC("voice", "Groq voice transcription enabled")
+		logger.InfoC("voice", "Groq voice transcription enabled (from provider config)")
 	}
 
 	if transcriber != nil {
 		if telegramChannel, ok := channelManager.GetChannel("telegram"); ok {
 			if tc, ok := telegramChannel.(*channels.TelegramChannel); ok {
 				tc.SetTranscriber(transcriber)
-				logger.InfoC("voice", "Groq transcription attached to Telegram channel")
 			}
 		}
 		if discordChannel, ok := channelManager.GetChannel("discord"); ok {
 			if dc, ok := discordChannel.(*channels.DiscordChannel); ok {
 				dc.SetTranscriber(transcriber)
-				logger.InfoC("voice", "Groq transcription attached to Discord channel")
 			}
 		}
 		if slackChannel, ok := channelManager.GetChannel("slack"); ok {
 			if sc, ok := slackChannel.(*channels.SlackChannel); ok {
 				sc.SetTranscriber(transcriber)
-				logger.InfoC("voice", "Groq transcription attached to Slack channel")
 			}
 		}
 		if onebotChannel, ok := channelManager.GetChannel("onebot"); ok {
@@ -634,22 +646,7 @@ func gatewayCmd() {
 				bc.SetTranscriber(transcriber)
 			}
 		}
-	}
-
-	// Qwen3-ASR: if enabled, override Bitrix24 transcriber with local ASR
-	if cfg.Voice.QwenASR.Enabled && cfg.Voice.QwenASR.APIBase != "" {
-		qwenTranscriber := voice.NewQwenTranscriber(cfg.Voice.QwenASR.APIBase)
-		if qwenTranscriber.IsAvailable() {
-			if bitrix24Channel, ok := channelManager.GetChannel("bitrix24"); ok {
-				if bc, ok := bitrix24Channel.(*channels.Bitrix24Channel); ok {
-					bc.SetTranscriber(qwenTranscriber)
-					logger.InfoC("voice", "Qwen3-ASR transcription attached to Bitrix24 channel (overrides Groq)")
-				}
-			}
-			logger.InfoC("voice", "Qwen3-ASR voice transcription enabled")
-		} else {
-			logger.WarnC("voice", "Qwen3-ASR configured but server unreachable, falling back to Groq")
-		}
+		logger.InfoC("voice", "Transcriber attached to all voice-capable channels")
 	}
 
 	enabledChannels := channelManager.GetEnabledChannels()

@@ -58,7 +58,7 @@ type Config struct {
 }
 
 type VoiceConfig struct {
-	QwenASR QwenASRConfig `json:"qwen_asr"`
+	Transcriber TranscriberConfig `json:"transcriber"`
 }
 
 type AgentsConfig struct {
@@ -305,6 +305,13 @@ type ProviderConfig struct {
 type OpenAIProviderConfig struct {
 	ProviderConfig
 	WebSearch bool `json:"web_search" env:"PICOCLAW_PROVIDERS_OPENAI_WEB_SEARCH"`
+// TranscriberConfig configures a speech-to-text provider using an OpenAI-compatible API.
+// Works with any service that implements POST /audio/transcriptions (Groq, Qwen3-ASR, OpenAI, etc.).
+type TranscriberConfig struct {
+	Enabled bool   `json:"enabled" env:"PICOCLAW_VOICE_TRANSCRIBER_ENABLED"`
+	APIBase string `json:"api_base" env:"PICOCLAW_VOICE_TRANSCRIBER_API_BASE"` // e.g., "http://192.168.2.198:8100/v1"
+	APIKey  string `json:"api_key" env:"PICOCLAW_VOICE_TRANSCRIBER_API_KEY"`   // optional, blank = no auth
+	Model   string `json:"model" env:"PICOCLAW_VOICE_TRANSCRIBER_MODEL"`       // optional, e.g., "whisper-large-v3"
 }
 
 type GatewayConfig struct {
@@ -490,9 +497,11 @@ func DefaultConfig() *Config {
 			MonitorUSB: true,
 		},
 		Voice: VoiceConfig{
-			QwenASR: QwenASRConfig{
+			Transcriber: TranscriberConfig{
 				Enabled: false,
 				APIBase: "",
+				APIKey:  "",
+				Model:   "",
 			},
 		},
 	}
