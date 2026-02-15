@@ -256,7 +256,7 @@ That's it! You have a working AI assistant in 2 minutes.
 
 ## 💬 Chat Apps
 
-Talk to your picoclaw through Telegram, Discord, DingTalk, or LINE
+Talk to your picoclaw through Telegram, Discord, DingTalk, LINE, or Bitrix24
 
 | Channel      | Setup                              |
 | ------------ | ---------------------------------- |
@@ -265,6 +265,7 @@ Talk to your picoclaw through Telegram, Discord, DingTalk, or LINE
 | **QQ**       | Easy (AppID + AppSecret)           |
 | **DingTalk** | Medium (app credentials)           |
 | **LINE**     | Medium (credentials + webhook URL) |
+| **Bitrix24** | Medium (webhook + bot credentials) |
 
 <details>
 <summary><b>Telegram</b> (Recommended)</summary>
@@ -461,6 +462,55 @@ picoclaw gateway
 > In group chats, the bot responds only when @mentioned. Replies quote the original message.
 
 > **Docker Compose**: Add `ports: ["18791:18791"]` to the `picoclaw-gateway` service to expose the webhook port.
+
+</details>
+
+<details>
+<summary><b>Bitrix24</b></summary>
+
+**1. Create a chatbot in Bitrix24**
+
+* Go to your Bitrix24 portal → Developer resources → Create a chatbot
+* Note the **Bot ID** assigned after creation
+* Set up an outbound webhook with the bot's events (`ONIMMESSAGEADD`, `ONIMCOMMANDADD`)
+* Copy the **Webhook Secret** (application token) and **User ID**
+
+**2. Configure**
+
+```json
+{
+  "channels": {
+    "bitrix24": {
+      "enabled": true,
+      "domain": "your-company.bitrix24.com",
+      "webhook_secret": "YOUR_WEBHOOK_SECRET",
+      "bot_id": "123",
+      "user_id": "1",
+      "client_id": "YOUR_CLIENT_ID",
+      "webhook_host": "0.0.0.0",
+      "webhook_port": 18792,
+      "webhook_path": "/webhook/bitrix24",
+      "allow_from": ["123", "456"]
+    }
+  }
+}
+```
+
+> Set `allow_from` to empty to allow all users, or specify Bitrix24 user IDs to restrict access.
+
+**3. Set up webhook URL**
+
+Bitrix24 needs to reach your PicoClaw instance. Point your bot's webhook URL to `http://your-server:18792/webhook/bitrix24`.
+
+**4. Run**
+
+```bash
+picoclaw gateway
+```
+
+> **Docker Compose**: Add `ports: ["18792:18792"]` to the `picoclaw-gateway` service to expose the webhook port.
+
+> **Features**: Markdown-to-BBCode conversion, typing indicators, slash commands, file upload/download, voice message transcription (Groq or Qwen3-ASR).
 
 </details>
 
@@ -771,6 +821,24 @@ picoclaw agent -m "Hello"
       "app_id": "",
       "app_secret": "",
       "allow_from": []
+    },
+    "bitrix24": {
+      "enabled": false,
+      "domain": "your-company.bitrix24.com",
+      "webhook_secret": "your_webhook_auth_token",
+      "bot_id": "123",
+      "user_id": "1",
+      "client_id": "your_client_id",
+      "webhook_host": "0.0.0.0",
+      "webhook_port": 18792,
+      "webhook_path": "/webhook/bitrix24",
+      "allow_from": []
+    }
+  },
+  "voice": {
+    "qwen_asr": {
+      "enabled": false,
+      "api_base": "http://192.168.2.198:8100/v1"
     }
   },
   "tools": {
