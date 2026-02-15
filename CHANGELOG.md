@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 This changelog tracks the `jaaacki/picoclaw` fork. Upstream changes from `sipeed/picoclaw` are synced periodically.
 
-## [0.2.0] — Unreleased
+## [0.2.0] — 2026-02-16
 
 **Milestone: Bitrix24 Channel** — PicoClaw can now connect to Bitrix24 CRM as a chat channel, bringing AI agent capabilities to business teams already using Bitrix24 for CRM, project management, and internal communication. This is the first channel contributed from the fork and the first to support BBCode formatting, bot slash commands, and a 3-step file upload flow.
 
@@ -24,3 +24,5 @@ This changelog tracks the `jaaacki/picoclaw` fork. Upstream changes from `sipeed
 - `Bitrix24Config` with 11 fields, `Bitrix24Command` struct, `QwenASRConfig`, `VoiceConfig` in `pkg/config/config.go`
 - Comprehensive test suite in `pkg/channels/bitrix24_test.go` — config defaults, constructor validation, webhook parsing, secret verification, HTTP handler, API URL construction, BBCode conversion, message splitting, file categorization
 - Environment variable support: `PICOCLAW_CHANNELS_BITRIX24_*` and `PICOCLAW_VOICE_QWEN_ASR_*` in `.env.example`
+- Living documentation: CHANGELOG.md, ROADMAP.md, LEARNING_LOG.md (#7, #15)
+- README.md: Bitrix24 setup guide, config examples, voice/ASR configuration (#7)

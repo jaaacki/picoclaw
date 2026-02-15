@@ -78,3 +78,13 @@ Every channel follows the same pattern (visible in `telegram.go`, `line.go`, `sl
 6. Incoming messages go through `HandleMessage()` on `BaseChannel` which publishes to the message bus
 
 The message bus is a simple pub/sub — channels publish, the agent subscribes. This decoupling means adding a new channel requires zero changes to the agent code.
+
+---
+
+## #15 — Porting from TypeScript to Go: what worked (Issue #15)
+
+**Why this design:** The entire Bitrix24 channel was ported from a ~3,864 LOC TypeScript implementation (OpenClaw) to ~700 LOC Go. The reduction isn't because Go is more concise — it's because we dropped the JavaScript SDK abstraction layer and called REST APIs directly with `net/http`. The TypeScript version used Zod schemas, class hierarchies, and async/await patterns that don't translate to Go idioms.
+
+**What just happened:** The most valuable step was reading the actual TypeScript source code on the dev server before writing any Go. This caught the URL pattern error in the original plan (`clientId` vs `webhookSecret` in the URL path) and revealed undocumented Bitrix24 behaviors like the bracket-notation form encoding and the missing `[CODE]` BBCode tag.
+
+**What could go wrong:** Without a local Go compiler (builds happen in Docker), we can't run `go test` locally. The test suite was written to be comprehensive so that the first Docker build catches issues. For future milestones, setting up Go locally or adding a CI pipeline would speed up the feedback loop.
