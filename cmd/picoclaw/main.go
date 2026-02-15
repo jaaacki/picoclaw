@@ -629,6 +629,11 @@ func gatewayCmd() {
 				logger.InfoC("voice", "Groq transcription attached to OneBot channel")
 			}
 		}
+		if bitrix24Channel, ok := channelManager.GetChannel("bitrix24"); ok {
+			if bc, ok := bitrix24Channel.(*channels.Bitrix24Channel); ok {
+				bc.SetTranscriber(transcriber)
+			}
+		}
 	}
 
 	enabledChannels := channelManager.GetEnabledChannels()
