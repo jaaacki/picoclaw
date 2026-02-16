@@ -88,3 +88,23 @@ The message bus is a simple pub/sub — channels publish, the agent subscribes. 
 **What just happened:** The most valuable step was reading the actual TypeScript source code on the dev server before writing any Go. This caught the URL pattern error in the original plan (`clientId` vs `webhookSecret` in the URL path) and revealed undocumented Bitrix24 behaviors like the bracket-notation form encoding and the missing `[CODE]` BBCode tag.
 
 **What could go wrong:** Without a local Go compiler (builds happen in Docker), we can't run `go test` locally. The test suite was written to be comprehensive so that the first Docker build catches issues. For future milestones, setting up Go locally or adding a CI pipeline would speed up the feedback loop.
+
+---
+
+## #16 — Upstream is a branch overlay, not a single folder (Issue #16)
+
+**Why this design:** In a Git fork, upstream content is spread across the same repository tree; it is not physically grouped into an `upstream/` directory. To keep merge risk low, we defined explicit fork-owned zones (`fork/`, `docs/`, `scripts/`, `.github/workflows/fork-guard.yml`) and treated everything else as upstream-owned by default.
+
+**What just happened:** We verified ownership directly against `upstream/main` with `git ls-tree`, which confirmed the root `README.md` is upstream-owned while the new governance files are fork-only. This gives us a concrete, auditable rule instead of relying on memory.
+
+**What could go wrong:** If the allowlist is too strict, legitimate integration fixes may get blocked; if it is too loose, upstream files drift and future sync conflicts expand. The policy therefore includes explicit exception paths (baseline mode and review-visible override tags).
+
+---
+
+## #17 — Two-lane enforcement keeps velocity while reducing drift (Issue #17)
+
+**Why this design:** A hard rule on day one can freeze progress in a fork that already diverged. We use three guard modes: `strict` for greenfield discipline, `baseline` for current divergence migration, and `sync` for reporting during upstream merges.
+
+**What just happened:** The guard script and CI workflow were documented and validated with container compile checks. We also moved a merge-time helper-name fix into fork-owned Bitrix24 files to avoid touching `pkg/channels/discord.go` (upstream-owned).
+
+**What could go wrong:** Baseline mode can become permanent technical debt if never tightened. The mitigation is to regularly shrink `fork/upstream_touch_baseline.txt` and promote checks from `baseline` to `strict` once integration fixes are isolated.
