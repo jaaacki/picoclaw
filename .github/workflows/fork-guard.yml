@@ -1,0 +1,34 @@
+name: fork-guard
+
+on:
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/sipeed/picoclaw || true
+          git fetch upstream main --depth=1
+
+      - name: Run strict fork guard
+        if: ${{ !contains(github.event.pull_request.title, '[allow-upstream-touch]') }}
+        run: |
+          scripts/fork_guard.sh \
+            --mode strict \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --to "${{ github.event.pull_request.head.sha }}"
+
+      - name: Run sync/report mode (override)
+        if: ${{ contains(github.event.pull_request.title, '[allow-upstream-touch]') }}
+        run: |
+          scripts/fork_guard.sh \
+            --mode sync \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --to "${{ github.event.pull_request.head.sha }}"

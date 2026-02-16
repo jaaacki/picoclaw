@@ -1,0 +1,17 @@
+.agent-rules/prompt_agent-team-rules.md
+.agent-rules/prompt_docs-versioning-rules.md
+.agent-rules/prompt_git-workflow-rules.md
+.agent-rules/prompt_testing-rules.md
+.env.example
+CHANGELOG.md
+LEARNING_LOG.md
+README.md
+ROADMAP.md
+cmd/picoclaw/main.go
+openclaw-vs-picoclaw-integration.md
+pkg/channels/bitrix24.go
+pkg/channels/bitrix24_test.go
+pkg/channels/manager.go
+pkg/config/config.go
+pkg/providers/http_provider.go
+pkg/voice/transcriber.go

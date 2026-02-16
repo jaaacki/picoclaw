@@ -1,0 +1,5 @@
+# Fork-owned zones (allowed in strict mode)
+docs/
+fork/
+scripts/
+.github/workflows/fork-guard.yml
