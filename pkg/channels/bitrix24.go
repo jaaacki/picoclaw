@@ -737,7 +737,7 @@ func (c *Bitrix24Channel) Send(ctx context.Context, msg bus.OutboundMessage) err
 	formatted := markdownToBBCode(msg.Content)
 
 	// Split long messages if needed (Bitrix24 limit ~60K chars)
-	fragments := splitMessage(formatted, 60000)
+	fragments := splitBitrix24Message(formatted, 60000)
 
 	for _, fragment := range fragments {
 		params := map[string]string{
@@ -1009,8 +1009,8 @@ func markdownToBBCode(text string) string {
 // Message Splitting (Issue #14)
 // ============================================================================
 
-// splitMessage splits text at natural boundaries if it exceeds maxLen.
-func splitMessage(text string, maxLen int) []string {
+// splitBitrix24Message splits text at natural boundaries if it exceeds maxLen.
+func splitBitrix24Message(text string, maxLen int) []string {
 	if len(text) <= maxLen {
 		return []string{text}
 	}

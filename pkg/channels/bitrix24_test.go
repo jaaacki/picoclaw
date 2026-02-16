@@ -450,7 +450,7 @@ func TestSplitMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fragments := splitMessage(tt.text, tt.maxLen)
+			fragments := splitBitrix24Message(tt.text, tt.maxLen)
 			if len(fragments) != tt.wantCount {
 				t.Errorf("splitMessage: got %d fragments, want %d", len(fragments), tt.wantCount)
 				for i, f := range fragments {
