@@ -21,14 +21,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
-	"github.com/sipeed/picoclaw/pkg/voice"
 )
-
-// Transcriber is an interface for speech-to-text providers.
-type Transcriber interface {
-	Transcribe(ctx context.Context, audioFilePath string) (*voice.TranscriptionResponse, error)
-	IsAvailable() bool
-}
 
 // Bitrix24Channel implements the Channel interface for Bitrix24 CRM
 // using HTTP webhook for receiving messages and REST API for sending.
@@ -39,7 +32,6 @@ type Bitrix24Channel struct {
 	httpClient  *http.Client
 	rateLimiter *time.Ticker
 	rateMu      sync.Mutex
-	transcriber Transcriber
 	ctx         context.Context
 	cancel      context.CancelFunc
 }
@@ -64,12 +56,6 @@ func NewBitrix24Channel(cfg config.Bitrix24Config, messageBus *bus.MessageBus) (
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
 		rateLimiter: time.NewTicker(time.Second), // 1 req/sec
 	}, nil
-}
-
-// SetTranscriber sets the voice transcriber for audio message support.
-// Accepts any Transcriber implementation (Groq, Qwen, etc.).
-func (c *Bitrix24Channel) SetTranscriber(t Transcriber) {
-	c.transcriber = t
 }
 
 // Start launches the HTTP webhook server for receiving Bitrix24 events.
@@ -352,24 +338,7 @@ func (c *Bitrix24Channel) handleMessage(event bitrix24Event) {
 			localFiles = append(localFiles, localPath)
 			mediaPaths = append(mediaPaths, localPath)
 
-			// Voice transcription (Issue #12)
-			if category == "voice" && c.transcriber != nil && c.transcriber.IsAvailable() {
-				ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
-				defer cancel()
-				result, err := c.transcriber.Transcribe(ctx, localPath)
-				if err != nil {
-					logger.ErrorCF("bitrix24", "Voice transcription failed", map[string]interface{}{
-						"error": err.Error(),
-					})
-					messageText += " [voice message - transcription failed]"
-				} else {
-					messageText += " " + result.Text
-					logger.InfoCF("bitrix24", "Voice transcribed", map[string]interface{}{
-						"duration": result.Duration,
-						"language": result.Language,
-					})
-				}
-			} else if category != "" {
+			if category != "" {
 				messageText += fmt.Sprintf(" [%s attachment]", category)
 			}
 		}

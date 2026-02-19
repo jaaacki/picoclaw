@@ -53,12 +53,7 @@ type Config struct {
 	Tools     ToolsConfig     `json:"tools"`
 	Heartbeat HeartbeatConfig `json:"heartbeat"`
 	Devices   DevicesConfig   `json:"devices"`
-	Voice     VoiceConfig     `json:"voice"`
 	mu        sync.RWMutex
-}
-
-type VoiceConfig struct {
-	Transcriber TranscriberConfig `json:"transcriber"`
 }
 
 type AgentsConfig struct {
@@ -307,15 +302,6 @@ type OpenAIProviderConfig struct {
 	WebSearch bool `json:"web_search" env:"PICOCLAW_PROVIDERS_OPENAI_WEB_SEARCH"`
 }
 
-// TranscriberConfig configures a speech-to-text provider using an OpenAI-compatible API.
-// Works with any service that implements POST /audio/transcriptions (Groq, Qwen3-ASR, OpenAI, etc.).
-type TranscriberConfig struct {
-	Enabled bool   `json:"enabled" env:"PICOCLAW_VOICE_TRANSCRIBER_ENABLED"`
-	APIBase string `json:"api_base" env:"PICOCLAW_VOICE_TRANSCRIBER_API_BASE"` // e.g., "http://192.168.2.198:8100/v1"
-	APIKey  string `json:"api_key" env:"PICOCLAW_VOICE_TRANSCRIBER_API_KEY"`   // optional, blank = no auth
-	Model   string `json:"model" env:"PICOCLAW_VOICE_TRANSCRIBER_MODEL"`       // optional, e.g., "whisper-large-v3"
-}
-
 type GatewayConfig struct {
 	Host string `json:"host" env:"PICOCLAW_GATEWAY_HOST"`
 	Port int    `json:"port" env:"PICOCLAW_GATEWAY_PORT"`
@@ -497,14 +483,6 @@ func DefaultConfig() *Config {
 		Devices: DevicesConfig{
 			Enabled:    false,
 			MonitorUSB: true,
-		},
-		Voice: VoiceConfig{
-			Transcriber: TranscriberConfig{
-				Enabled: false,
-				APIBase: "",
-				APIKey:  "",
-				Model:   "",
-			},
 		},
 	}
 }

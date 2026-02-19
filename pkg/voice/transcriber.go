@@ -16,55 +16,44 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
-// TranscriptionResponse holds the result from any OpenAI-compatible transcription API.
+type GroqTranscriber struct {
+	apiKey     string
+	apiBase    string
+	httpClient *http.Client
+}
+
 type TranscriptionResponse struct {
 	Text     string  `json:"text"`
 	Language string  `json:"language,omitempty"`
 	Duration float64 `json:"duration,omitempty"`
 }
 
-// Transcriber provides speech-to-text via any OpenAI-compatible /audio/transcriptions endpoint.
-// Works with Groq, Qwen3-ASR, OpenAI Whisper, and any other compatible service.
-type Transcriber struct {
-	apiBase    string // e.g., "http://192.168.2.198:8100/v1" or "https://api.groq.com/openai/v1"
-	apiKey     string // optional, blank = no Authorization header
-	model      string // optional, e.g., "whisper-large-v3" or "qwen3-asr"
-	httpClient *http.Client
-}
+func NewGroqTranscriber(apiKey string) *GroqTranscriber {
+	logger.DebugCF("voice", "Creating Groq transcriber", map[string]interface{}{"has_api_key": apiKey != ""})
 
-// NewTranscriber creates a generic OpenAI-compatible speech-to-text transcriber.
-// apiBase: base URL with /v1 (e.g., "http://192.168.2.198:8100/v1")
-// apiKey: optional, leave blank for no auth (LAN services)
-// model: optional, leave blank to omit from request (server uses its default)
-func NewTranscriber(apiBase, apiKey, model string) *Transcriber {
-	logger.DebugCF("voice", "Creating transcriber", map[string]interface{}{
-		"api_base":  apiBase,
-		"has_key":   apiKey != "",
-		"model":     model,
-	})
-
-	return &Transcriber{
-		apiBase: apiBase,
+	apiBase := "https://api.groq.com/openai/v1"
+	return &GroqTranscriber{
 		apiKey:  apiKey,
-		model:   model,
+		apiBase: apiBase,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
 }
 
-// Transcribe sends an audio file to the transcription API.
-func (t *Transcriber) Transcribe(ctx context.Context, audioFilePath string) (*TranscriptionResponse, error) {
+func (t *GroqTranscriber) Transcribe(ctx context.Context, audioFilePath string) (*TranscriptionResponse, error) {
 	logger.InfoCF("voice", "Starting transcription", map[string]interface{}{"audio_file": audioFilePath})
 
 	audioFile, err := os.Open(audioFilePath)
 	if err != nil {
+		logger.ErrorCF("voice", "Failed to open audio file", map[string]interface{}{"path": audioFilePath, "error": err})
 		return nil, fmt.Errorf("failed to open audio file: %w", err)
 	}
 	defer audioFile.Close()
 
 	fileInfo, err := audioFile.Stat()
 	if err != nil {
+		logger.ErrorCF("voice", "Failed to get file info", map[string]interface{}{"path": audioFilePath, "error": err})
 		return nil, fmt.Errorf("failed to get file info: %w", err)
 	}
 
@@ -78,129 +67,93 @@ func (t *Transcriber) Transcribe(ctx context.Context, audioFilePath string) (*Tr
 
 	part, err := writer.CreateFormFile("file", filepath.Base(audioFilePath))
 	if err != nil {
+		logger.ErrorCF("voice", "Failed to create form file", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to create form file: %w", err)
 	}
 
-	if _, err := io.Copy(part, audioFile); err != nil {
+	copied, err := io.Copy(part, audioFile)
+	if err != nil {
+		logger.ErrorCF("voice", "Failed to copy file content", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to copy file content: %w", err)
 	}
 
-	if t.model != "" {
-		if err := writer.WriteField("model", t.model); err != nil {
-			return nil, fmt.Errorf("failed to write model field: %w", err)
-		}
+	logger.DebugCF("voice", "File copied to request", map[string]interface{}{"bytes_copied": copied})
+
+	if err := writer.WriteField("model", "whisper-large-v3"); err != nil {
+		logger.ErrorCF("voice", "Failed to write model field", map[string]interface{}{"error": err})
+		return nil, fmt.Errorf("failed to write model field: %w", err)
 	}
 
 	if err := writer.WriteField("response_format", "json"); err != nil {
+		logger.ErrorCF("voice", "Failed to write response_format field", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to write response_format field: %w", err)
 	}
 
 	if err := writer.Close(); err != nil {
+		logger.ErrorCF("voice", "Failed to close multipart writer", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
 	url := t.apiBase + "/audio/transcriptions"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &requestBody)
 	if err != nil {
+		logger.ErrorCF("voice", "Failed to create request", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	if t.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+t.apiKey)
-	}
+	req.Header.Set("Authorization", "Bearer "+t.apiKey)
 
-	logger.DebugCF("voice", "Sending transcription request", map[string]interface{}{
-		"url":          url,
-		"request_size": requestBody.Len(),
+	logger.DebugCF("voice", "Sending transcription request to Groq API", map[string]interface{}{
+		"url":                url,
+		"request_size_bytes": requestBody.Len(),
+		"file_size_bytes":    fileInfo.Size(),
 	})
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
+		logger.ErrorCF("voice", "Failed to send request", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logger.ErrorCF("voice", "Failed to read response", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("transcription API error (status %d): %s", resp.StatusCode, string(body))
+		logger.ErrorCF("voice", "API error", map[string]interface{}{
+			"status_code": resp.StatusCode,
+			"response":    string(body),
+		})
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
+
+	logger.DebugCF("voice", "Received response from Groq API", map[string]interface{}{
+		"status_code":         resp.StatusCode,
+		"response_size_bytes": len(body),
+	})
 
 	var result TranscriptionResponse
 	if err := json.Unmarshal(body, &result); err != nil {
+		logger.ErrorCF("voice", "Failed to unmarshal response", map[string]interface{}{"error": err})
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	logger.InfoCF("voice", "Transcription completed", map[string]interface{}{
-		"text_length": len(result.Text),
-		"language":    result.Language,
-		"duration":    result.Duration,
-		"preview":     utils.Truncate(result.Text, 50),
+	logger.InfoCF("voice", "Transcription completed successfully", map[string]interface{}{
+		"text_length":           len(result.Text),
+		"language":              result.Language,
+		"duration_seconds":      result.Duration,
+		"transcription_preview": utils.Truncate(result.Text, 50),
 	})
 
 	return &result, nil
 }
 
-// IsAvailable checks if the transcription service is reachable.
-// Tries multiple health check endpoints: /models (OpenAI standard), /health (common), base URL.
-func (t *Transcriber) IsAvailable() bool {
-	if t.apiBase == "" {
-		return false
-	}
-
-	// Try multiple endpoints — different services expose different health checks
-	endpoints := []string{
-		t.apiBase + "/models",  // OpenAI-compatible (Groq, vLLM)
-		t.apiBase + "/health",  // Common health endpoint
-	}
-
-	// Also try the base URL without /v1 suffix for /health
-	if len(t.apiBase) > 3 && t.apiBase[len(t.apiBase)-3:] == "/v1" {
-		endpoints = append(endpoints, t.apiBase[:len(t.apiBase)-3]+"/health")
-	}
-
-	for _, endpoint := range endpoints {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-		if err != nil {
-			cancel()
-			continue
-		}
-
-		if t.apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+t.apiKey)
-		}
-
-		resp, err := t.httpClient.Do(req)
-		cancel()
-		if err != nil {
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusOK {
-			logger.DebugCF("voice", "Transcriber health check passed", map[string]interface{}{
-				"api_base": t.apiBase,
-				"endpoint": endpoint,
-			})
-			return true
-		}
-	}
-
-	logger.DebugCF("voice", "Transcriber health check failed (all endpoints)", map[string]interface{}{
-		"api_base": t.apiBase,
-	})
-	return false
-}
-
-// GroqTranscriber is kept for backward compatibility with upstream.
-// It creates a Transcriber pre-configured for Groq's API.
-type GroqTranscriber = Transcriber
-
-func NewGroqTranscriber(apiKey string) *GroqTranscriber {
-	return NewTranscriber("https://api.groq.com/openai/v1", apiKey, "whisper-large-v3")
+func (t *GroqTranscriber) IsAvailable() bool {
+	available := t.apiKey != ""
+	logger.DebugCF("voice", "Checking transcriber availability", map[string]interface{}{"available": available})
+	return available
 }
