@@ -252,6 +252,16 @@ type Bitrix24Config struct {
 	WebhookPath   string              `json:"webhook_path" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_PATH"`
 	AllowFrom     FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_BITRIX24_ALLOW_FROM"`
 	Commands      []Bitrix24Command   `json:"commands,omitempty"`
+
+	// GroupRespondAll controls bot response behavior in group chats.
+	// false (default): respond only when @mentioned.
+	// true: respond to every message in the group.
+	GroupRespondAll bool `json:"group_respond_all" env:"PICOCLAW_CHANNELS_BITRIX24_GROUP_RESPOND_ALL"`
+
+	// WebhookBaseURL is the public base URL for this bot's webhook endpoint.
+	// Used when registering bot commands. E.g. "https://picoclaw.example.com"
+	// Falls back to constructing from WebhookHost:WebhookPort if empty.
+	WebhookBaseURL string `json:"webhook_base_url" env:"PICOCLAW_CHANNELS_BITRIX24_WEBHOOK_BASE_URL"`
 }
 
 // Bitrix24Command defines a bot command for registration with Bitrix24.
@@ -424,16 +434,18 @@ func DefaultConfig() *Config {
 				AllowFrom:          FlexibleStringSlice{},
 			},
 			Bitrix24: Bitrix24Config{
-				Enabled:       false,
-				Domain:        "",
-				WebhookSecret: "",
-				BotID:         "",
-				UserID:        "",
-				ClientID:      "",
-				WebhookHost:   "0.0.0.0",
-				WebhookPort:   18792,
-				WebhookPath:   "/webhook/bitrix24",
-				AllowFrom:     FlexibleStringSlice{},
+				Enabled:        false,
+				Domain:         "",
+				WebhookSecret:  "",
+				BotID:          "",
+				UserID:         "",
+				ClientID:       "",
+				WebhookHost:    "0.0.0.0",
+				WebhookPort:    18792,
+				WebhookPath:    "/webhook/bitrix24",
+				AllowFrom:      FlexibleStringSlice{},
+				GroupRespondAll: false,
+				WebhookBaseURL:  "",
 			},
 		},
 		Providers: ProvidersConfig{

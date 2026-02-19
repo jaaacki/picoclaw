@@ -27,13 +27,15 @@ import (
 // using HTTP webhook for receiving messages and REST API for sending.
 type Bitrix24Channel struct {
 	*BaseChannel
-	config      config.Bitrix24Config
-	httpServer  *http.Server
-	httpClient  *http.Client
-	rateLimiter *time.Ticker
-	rateMu      sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
+	config          config.Bitrix24Config
+	httpServer      *http.Server
+	httpClient      *http.Client
+	rateLimiter     *time.Ticker
+	rateMu          sync.Mutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	diskFolderCache sync.Map // chatID → folderID string
+	seenEvents      sync.Map // eventKey → expiry time.Time
 }
 
 // NewBitrix24Channel creates a new Bitrix24 channel instance.
@@ -86,6 +88,26 @@ func (c *Bitrix24Channel) Start(ctx context.Context) error {
 			logger.ErrorCF("bitrix24", "Webhook server error", map[string]interface{}{
 				"error": err.Error(),
 			})
+		}
+	}()
+
+	// Periodic cleanup of expired deduplication entries
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				now := time.Now()
+				c.seenEvents.Range(func(k, v interface{}) bool {
+					if now.After(v.(time.Time)) {
+						c.seenEvents.Delete(k)
+					}
+					return true
+				})
+			case <-c.ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -156,11 +178,33 @@ func (c *Bitrix24Channel) webhookHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Return 200 immediately, process asynchronously
-	w.WriteHeader(http.StatusOK)
-
 	// Parse the form-urlencoded body
 	event := c.parseWebhookBody(string(body))
+
+	// Event deduplication: Bitrix24 can fire duplicate webhook events on retries
+	const dedupTTL = 5 * time.Minute
+
+	dedupID := event.Params["MESSAGE_ID"]
+	if dedupID == "" {
+		dedupID = event.Params["CMD_MESSAGE_ID"]
+	}
+	if dedupID != "" {
+		key := event.Event + ":" + dedupID
+		now := time.Now()
+		expiry := now.Add(dedupTTL)
+		if prev, loaded := c.seenEvents.LoadOrStore(key, expiry); loaded {
+			if now.Before(prev.(time.Time)) {
+				logger.DebugCF("bitrix24", "Dropping duplicate event",
+					map[string]interface{}{"key": key})
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			c.seenEvents.Store(key, expiry)
+		}
+	}
+
+	// Return 200 immediately, process asynchronously
+	w.WriteHeader(http.StatusOK)
 
 	go c.processEvent(event)
 }
@@ -306,6 +350,20 @@ func (c *Bitrix24Channel) handleMessage(event bitrix24Event) {
 		event.Params["TO_CHAT_ID"],
 		fromUserID,
 	)
+
+	// Group chat mention filter: only respond if @mentioned (unless GroupRespondAll)
+	isGroupChat := strings.HasPrefix(dialogID, "chat:")
+	if isGroupChat && !c.config.GroupRespondAll {
+		mentionTag := "[USER=" + c.config.BotID + "]"
+		if !strings.Contains(messageText, mentionTag) {
+			logger.DebugCF("bitrix24", "Ignoring group message: bot not mentioned",
+				map[string]interface{}{
+					"dialog_id": dialogID,
+					"bot_id":    c.config.BotID,
+				})
+			return
+		}
+	}
 
 	// Send typing indicator immediately (fire-and-forget)
 	go c.sendTyping(dialogID)
@@ -512,20 +570,12 @@ func (c *Bitrix24Channel) handleCommand(event bitrix24Event) {
 func (c *Bitrix24Channel) registerCommands() {
 	for _, cmd := range c.config.Commands {
 		// Build webhook URL for command events
-		webhookURL := fmt.Sprintf("https://%s:%d%s?secret=%s",
-			c.config.WebhookHost,
-			c.config.WebhookPort,
-			c.config.WebhookPath,
-			c.config.WebhookSecret,
-		)
-		if c.config.WebhookHost == "0.0.0.0" {
-			// Use domain as fallback for public URL
-			webhookURL = fmt.Sprintf("https://%s%s?secret=%s",
-				c.config.Domain,
-				c.config.WebhookPath,
-				c.config.WebhookSecret,
-			)
+		path := c.config.WebhookPath
+		if path == "" {
+			path = "/webhook/bitrix24"
 		}
+		webhookURL := fmt.Sprintf("%s%s?secret=%s",
+			c.webhookBaseURL(), path, c.config.WebhookSecret)
 
 		common := "N"
 		if cmd.Common {
@@ -592,21 +642,55 @@ func (c *Bitrix24Channel) buildAPIURL(method string) string {
 	)
 }
 
-// callAPI makes a rate-limited POST request to the Bitrix24 REST API.
-func (c *Bitrix24Channel) callAPI(ctx context.Context, method string, params map[string]string) (json.RawMessage, error) {
-	// Rate limiting: wait for ticker
+// callAPIRaw executes a rate-limited POST to the Bitrix24 REST API.
+// The caller must set req.URL and req.Header["Content-Type"] before calling.
+func (c *Bitrix24Channel) callAPIRaw(ctx context.Context, req *http.Request) (json.RawMessage, error) {
 	c.rateMu.Lock()
-	<-c.rateLimiter.C
+	select {
+	case <-c.rateLimiter.C:
+	case <-ctx.Done():
+		c.rateMu.Unlock()
+		return nil, ctx.Err()
+	}
 	c.rateMu.Unlock()
 
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("bitrix24 API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bitrix24 API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var apiResp struct {
+		Result json.RawMessage `json:"result"`
+		Error  string          `json:"error"`
+		Desc   string          `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if apiResp.Error != "" {
+		return nil, fmt.Errorf("bitrix24 API: %s — %s", apiResp.Error, apiResp.Desc)
+	}
+
+	return apiResp.Result, nil
+}
+
+// callAPI makes a rate-limited POST request to the Bitrix24 REST API.
+func (c *Bitrix24Channel) callAPI(ctx context.Context, method string, params map[string]string) (json.RawMessage, error) {
 	apiURL := c.buildAPIURL(method)
 
-	// Build form data
 	form := url.Values{}
 	for k, v := range params {
 		form.Set(k, v)
 	}
-	// Add CLIENT_ID (application_token) if configured
 	if c.config.ClientID != "" {
 		form.Set("CLIENT_ID", c.config.ClientID)
 	}
@@ -617,42 +701,11 @@ func (c *Bitrix24Channel) callAPI(ctx context.Context, method string, params map
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bitrix24 API error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var apiResp struct {
-		Result json.RawMessage `json:"result"`
-		Error  string          `json:"error"`
-		Desc   string          `json:"error_description"`
-	}
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-	if apiResp.Error != "" {
-		return nil, fmt.Errorf("bitrix24 API: %s — %s", apiResp.Error, apiResp.Desc)
-	}
-
-	return apiResp.Result, nil
+	return c.callAPIRaw(ctx, req)
 }
 
 // callAPIJSON makes a rate-limited POST with JSON body for complex parameters.
 func (c *Bitrix24Channel) callAPIJSON(ctx context.Context, method string, payload interface{}) (json.RawMessage, error) {
-	c.rateMu.Lock()
-	<-c.rateLimiter.C
-	c.rateMu.Unlock()
-
 	apiURL := c.buildAPIURL(method)
 
 	body, err := json.Marshal(payload)
@@ -666,34 +719,7 @@ func (c *Bitrix24Channel) callAPIJSON(ctx context.Context, method string, payloa
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bitrix24 API error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var apiResp struct {
-		Result json.RawMessage `json:"result"`
-		Error  string          `json:"error"`
-		Desc   string          `json:"error_description"`
-	}
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-	if apiResp.Error != "" {
-		return nil, fmt.Errorf("bitrix24 API: %s — %s", apiResp.Error, apiResp.Desc)
-	}
-
-	return apiResp.Result, nil
+	return c.callAPIRaw(ctx, req)
 }
 
 // Send sends a message to Bitrix24 via imbot.message.add.
@@ -706,7 +732,7 @@ func (c *Bitrix24Channel) Send(ctx context.Context, msg bus.OutboundMessage) err
 	formatted := markdownToBBCode(msg.Content)
 
 	// Split long messages if needed (Bitrix24 limit ~60K chars)
-	fragments := splitBitrix24Message(formatted, 60000)
+	fragments := utils.SplitMessage(formatted, 60000)
 
 	for _, fragment := range fragments {
 		params := map[string]string{
@@ -740,28 +766,35 @@ func (c *Bitrix24Channel) Send(ctx context.Context, msg bus.OutboundMessage) err
 // ============================================================================
 
 // sendTyping sends a typing indicator to the chat.
+// It bypasses the rate limiter since typing indicators are best-effort
+// and should not block or consume the shared rate-limit slot.
 func (c *Bitrix24Channel) sendTyping(dialogID string) {
-	params := map[string]string{
-		"DIALOG_ID": dialogID,
-	}
+	apiURL := fmt.Sprintf("https://%s/rest/%s/%s/%s",
+		c.config.Domain, c.config.UserID, c.config.WebhookSecret, "imbot.chat.sendTyping")
+
+	params := url.Values{}
+	params.Set("DIALOG_ID", dialogID)
 	if c.config.BotID != "" {
-		params["BOT_ID"] = c.config.BotID
+		params.Set("BOT_ID", c.config.BotID)
 	}
 
-	_, err := c.callAPI(c.ctx, "imbot.chat.sendTyping", params)
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, apiURL,
+		strings.NewReader(params.Encode()))
 	if err != nil {
-		logger.DebugCF("bitrix24", "Failed to send typing indicator", map[string]interface{}{
-			"error": err.Error(),
-		})
+		return // best-effort
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
 
 // ============================================================================
 // File Upload (Issue #11)
 // ============================================================================
-
-// diskFolderID caches the chat file folder ID to avoid repeated API calls.
-var diskFolderCache sync.Map // chatID → folderID string
 
 // uploadFile uploads a file to Bitrix24 using the 3-step flow:
 // 1. im.disk.folder.get (get/cache folder ID)
@@ -852,7 +885,7 @@ func (c *Bitrix24Channel) uploadFile(ctx context.Context, chatID, filePath strin
 // getChatFolderID returns the disk folder ID for a chat, caching the result.
 func (c *Bitrix24Channel) getChatFolderID(ctx context.Context, chatID string) (string, error) {
 	// Check cache
-	if cached, ok := diskFolderCache.Load(chatID); ok {
+	if cached, ok := c.diskFolderCache.Load(chatID); ok {
 		return cached.(string), nil
 	}
 
@@ -874,7 +907,7 @@ func (c *Bitrix24Channel) getChatFolderID(ctx context.Context, chatID string) (s
 	}
 
 	folderIDStr := fmt.Sprintf("%d", folder.ID)
-	diskFolderCache.Store(chatID, folderIDStr)
+	c.diskFolderCache.Store(chatID, folderIDStr)
 	return folderIDStr, nil
 }
 
@@ -971,57 +1004,24 @@ func markdownToBBCode(text string) string {
 	// Clean up extra blank lines
 	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
 
-	return strings.TrimSpace(result)
-}
-
-// ============================================================================
-// Message Splitting (Issue #14)
-// ============================================================================
-
-// splitBitrix24Message splits text at natural boundaries if it exceeds maxLen.
-func splitBitrix24Message(text string, maxLen int) []string {
-	if len(text) <= maxLen {
-		return []string{text}
-	}
-
-	var fragments []string
-	remaining := text
-
-	for len(remaining) > maxLen {
-		// Try to split at paragraph boundary
-		cutPoint := findCutPoint(remaining, maxLen)
-		fragments = append(fragments, strings.TrimSpace(remaining[:cutPoint]))
-		remaining = strings.TrimSpace(remaining[cutPoint:])
-	}
-
-	if remaining != "" {
-		fragments = append(fragments, remaining)
-	}
-
-	return fragments
-}
-
-// findCutPoint finds the best position to split text at or before maxLen.
-func findCutPoint(text string, maxLen int) int {
-	chunk := text[:maxLen]
-
-	// Try double newline (paragraph break)
-	if idx := strings.LastIndex(chunk, "\n\n"); idx > maxLen/2 {
-		return idx + 2
-	}
-
-	// Try single newline
-	if idx := strings.LastIndex(chunk, "\n"); idx > maxLen/2 {
-		return idx + 1
-	}
-
-	// Fall back to maxLen
-	return maxLen
+	return strings.Trim(result, "\n")
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+// webhookBaseURL returns the public base URL for webhook command registration.
+func (c *Bitrix24Channel) webhookBaseURL() string {
+	if c.config.WebhookBaseURL != "" {
+		return strings.TrimRight(c.config.WebhookBaseURL, "/")
+	}
+	host := c.config.WebhookHost
+	if host == "" || host == "0.0.0.0" {
+		host = "localhost"
+	}
+	return fmt.Sprintf("http://%s:%d", host, c.config.WebhookPort)
+}
 
 // firstNonEmpty returns the first non-empty string from the arguments.
 func firstNonEmpty(vals ...string) string {

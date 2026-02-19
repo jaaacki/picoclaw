@@ -412,54 +412,216 @@ func TestMarkdownToBBCode(t *testing.T) {
 }
 
 // ============================================================================
-// Message Splitting Tests (Issue #14)
+// Message Splitting Tests (Issue #14) — moved to pkg/utils/message_test.go
+// splitBitrix24Message was removed; callers now use utils.SplitMessage.
 // ============================================================================
 
-func TestSplitMessage(t *testing.T) {
-	tests := []struct {
-		name      string
-		text      string
-		maxLen    int
-		wantCount int
-	}{
-		{
-			name:      "short message",
-			text:      "hello",
-			maxLen:    100,
-			wantCount: 1,
-		},
-		{
-			name:      "exact boundary",
-			text:      "hello",
-			maxLen:    5,
-			wantCount: 1,
-		},
-		{
-			name:      "split at paragraph",
-			text:      "first paragraph\n\nsecond paragraph that makes it too long",
-			maxLen:    25,
-			wantCount: 2,
-		},
-		{
-			name:      "split at newline",
-			text:      "line one\nline two that is quite long",
-			maxLen:    15,
-			wantCount: 2,
-		},
+// ============================================================================
+// DiskFolderCache Per-Instance Test
+// ============================================================================
+
+func TestBitrix24_DiskFolderCache_PerInstance(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	cfg := config.Bitrix24Config{
+		Domain:        "test.bitrix24.com",
+		WebhookSecret: "test-secret",
+		BotID:         "1",
 	}
 
+	ch1, err := NewBitrix24Channel(cfg, msgBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch2, err := NewBitrix24Channel(cfg, msgBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch1.diskFolderCache.Store("chat123", "folder-A")
+
+	if _, ok := ch2.diskFolderCache.Load("chat123"); ok {
+		t.Error("ch2 should not see ch1's diskFolderCache entry — cache is not per-instance")
+	}
+}
+
+// ============================================================================
+// Group Chat Tests
+// ============================================================================
+
+func TestBitrix24_GroupChat_IgnoredWithoutMention(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	ch, _ := NewBitrix24Channel(config.Bitrix24Config{
+		Domain:         "test.bitrix24.com",
+		WebhookSecret:  "secret",
+		BotID:          "42",
+		GroupRespondAll: false,
+	}, msgBus)
+	ch.ctx, ch.cancel = context.WithCancel(context.Background())
+	defer ch.cancel()
+
+	body := "event=ONIMMESSAGEADD&data[PARAMS][FROM_USER_ID]=99&data[PARAMS][MESSAGE]=Hello+everyone&data[PARAMS][DIALOG_ID]=chat:100&data[PARAMS][MESSAGE_ID]=501"
+	req := httptest.NewRequest(http.MethodPost, "/webhook/bitrix24?secret=secret", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	ch.webhookHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	// The bus should be empty — the message had no bot mention
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	msg, ok := msgBus.ConsumeInbound(ctx)
+	if ok {
+		t.Errorf("expected no message on bus, got: %+v", msg)
+	}
+}
+
+func TestBitrix24_GroupChat_ProcessedWithMention(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	ch, _ := NewBitrix24Channel(config.Bitrix24Config{
+		Domain:         "test.bitrix24.com",
+		WebhookSecret:  "secret",
+		BotID:          "42",
+		GroupRespondAll: false,
+	}, msgBus)
+	ch.ctx, ch.cancel = context.WithCancel(context.Background())
+	defer ch.cancel()
+
+	body := "event=ONIMMESSAGEADD&data[PARAMS][FROM_USER_ID]=99&data[PARAMS][MESSAGE]=%5BUSER%3D42%5DBot+Name%5B%2FUSER%5D+Help+me&data[PARAMS][DIALOG_ID]=chat:100&data[PARAMS][MESSAGE_ID]=502"
+	req := httptest.NewRequest(http.MethodPost, "/webhook/bitrix24?secret=secret", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	ch.webhookHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	msg, ok := msgBus.ConsumeInbound(ctx)
+	if !ok {
+		t.Fatal("expected an InboundMessage on bus, got none")
+	}
+	if msg.ChatID != "chat:100" {
+		t.Errorf("expected chat_id chat:100, got %s", msg.ChatID)
+	}
+}
+
+func TestBitrix24_GroupChat_RespondAll(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	ch, _ := NewBitrix24Channel(config.Bitrix24Config{
+		Domain:         "test.bitrix24.com",
+		WebhookSecret:  "secret",
+		BotID:          "42",
+		GroupRespondAll: true,
+	}, msgBus)
+	ch.ctx, ch.cancel = context.WithCancel(context.Background())
+	defer ch.cancel()
+
+	body := "event=ONIMMESSAGEADD&data[PARAMS][FROM_USER_ID]=99&data[PARAMS][MESSAGE]=No+mention+here&data[PARAMS][DIALOG_ID]=chat:200&data[PARAMS][MESSAGE_ID]=503"
+	req := httptest.NewRequest(http.MethodPost, "/webhook/bitrix24?secret=secret", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	ch.webhookHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	msg, ok := msgBus.ConsumeInbound(ctx)
+	if !ok {
+		t.Fatal("expected an InboundMessage on bus, got none")
+	}
+	if msg.ChatID != "chat:200" {
+		t.Errorf("expected chat_id chat:200, got %s", msg.ChatID)
+	}
+}
+
+// ============================================================================
+// Event Deduplication Test
+// ============================================================================
+
+func TestBitrix24_EventDeduplication(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	ch, _ := NewBitrix24Channel(config.Bitrix24Config{
+		Domain:        "test.bitrix24.com",
+		WebhookSecret: "secret",
+		BotID:         "1",
+	}, msgBus)
+	ch.ctx, ch.cancel = context.WithCancel(context.Background())
+	defer ch.cancel()
+
+	body := "event=ONIMMESSAGEADD&data[PARAMS][FROM_USER_ID]=42&data[PARAMS][MESSAGE]=Duplicate+test&data[PARAMS][DIALOG_ID]=42&data[PARAMS][MESSAGE_ID]=999"
+
+	// First request
+	req1 := httptest.NewRequest(http.MethodPost, "/webhook/bitrix24?secret=secret", strings.NewReader(body))
+	w1 := httptest.NewRecorder()
+	ch.webhookHandler(w1, req1)
+
+	// Second request (same event+message_id)
+	req2 := httptest.NewRequest(http.MethodPost, "/webhook/bitrix24?secret=secret", strings.NewReader(body))
+	w2 := httptest.NewRecorder()
+	ch.webhookHandler(w2, req2)
+
+	if w1.Code != http.StatusOK || w2.Code != http.StatusOK {
+		t.Errorf("expected both requests to return 200, got %d and %d", w1.Code, w2.Code)
+	}
+
+	// Consume the first (expected) message
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel1()
+	_, ok := msgBus.ConsumeInbound(ctx1)
+	if !ok {
+		t.Fatal("expected at least 1 InboundMessage, got none")
+	}
+
+	// Verify no second message arrives (duplicate should have been dropped)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel2()
+	msg, ok := msgBus.ConsumeInbound(ctx2)
+	if ok {
+		t.Errorf("expected no second message (duplicate), but got: %+v", msg)
+	}
+}
+
+// ============================================================================
+// WebhookBaseURL Test
+// ============================================================================
+
+func TestBitrix24_WebhookBaseURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		host   string
+		port   int
+		base   string
+		expect string
+	}{
+		{"explicit URL", "", 0, "https://picoclaw.example.com", "https://picoclaw.example.com"},
+		{"trailing slash stripped", "", 0, "https://picoclaw.example.com/", "https://picoclaw.example.com"},
+		{"host+port fallback", "192.168.1.1", 8080, "", "http://192.168.1.1:8080"},
+		{"0.0.0.0 becomes localhost", "0.0.0.0", 8080, "", "http://localhost:8080"},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fragments := splitBitrix24Message(tt.text, tt.maxLen)
-			if len(fragments) != tt.wantCount {
-				t.Errorf("splitMessage: got %d fragments, want %d", len(fragments), tt.wantCount)
-				for i, f := range fragments {
-					t.Logf("  fragment[%d] = %q", i, f)
-				}
+			ch := &Bitrix24Channel{
+				config: config.Bitrix24Config{
+					WebhookHost:    tt.host,
+					WebhookPort:    tt.port,
+					WebhookBaseURL: tt.base,
+				},
+			}
+			if got := ch.webhookBaseURL(); got != tt.expect {
+				t.Errorf("got %q, want %q", got, tt.expect)
 			}
 		})
 	}
 }
+
 
 // ============================================================================
 // Helper Tests
