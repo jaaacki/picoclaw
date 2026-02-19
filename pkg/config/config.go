@@ -305,6 +305,8 @@ type ProviderConfig struct {
 type OpenAIProviderConfig struct {
 	ProviderConfig
 	WebSearch bool `json:"web_search" env:"PICOCLAW_PROVIDERS_OPENAI_WEB_SEARCH"`
+}
+
 // TranscriberConfig configures a speech-to-text provider using an OpenAI-compatible API.
 // Works with any service that implements POST /audio/transcriptions (Groq, Qwen3-ASR, OpenAI, etc.).
 type TranscriberConfig struct {
