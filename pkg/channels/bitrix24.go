@@ -766,30 +766,18 @@ func (c *Bitrix24Channel) Send(ctx context.Context, msg bus.OutboundMessage) err
 // ============================================================================
 
 // sendTyping sends a typing indicator to the chat.
-// It bypasses the rate limiter since typing indicators are best-effort
-// and should not block or consume the shared rate-limit slot.
+// Best-effort: errors are logged at debug level only.
 func (c *Bitrix24Channel) sendTyping(dialogID string) {
-	apiURL := fmt.Sprintf("https://%s/rest/%s/%s/%s",
-		c.config.Domain, c.config.UserID, c.config.WebhookSecret, "imbot.chat.sendTyping")
-
-	params := url.Values{}
-	params.Set("DIALOG_ID", dialogID)
+	params := map[string]string{
+		"DIALOG_ID": dialogID,
+	}
 	if c.config.BotID != "" {
-		params.Set("BOT_ID", c.config.BotID)
+		params["BOT_ID"] = c.config.BotID
 	}
-
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, apiURL,
-		strings.NewReader(params.Encode()))
-	if err != nil {
-		return // best-effort
+	if _, err := c.callAPI(c.ctx, "imbot.chat.sendTyping", params); err != nil {
+		logger.DebugCF("bitrix24", "Failed to send typing indicator",
+			map[string]interface{}{"dialog_id": dialogID, "error": err.Error()})
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return
-	}
-	resp.Body.Close()
 }
 
 // ============================================================================
